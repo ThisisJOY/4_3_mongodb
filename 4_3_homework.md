@@ -438,10 +438,10 @@ configdb=configsvr/192.168.56.200:17011,192.168.56.200:17013,192.168.56.200:1701
 
 ```
 cd ..
-./bin/mongos -f route/route-27017.conf
+./bin/mongos -f route/route-27017.conf 注意配置节点和分片节点必须都已经提前启动
 ```
 
-### 4. **mongos(路由)中添加分片节点**
+##### **4. **mongos(路由)中添加分片节点**
 
 进入路由mongos
 
@@ -481,55 +481,159 @@ db.lg_resume_datas.insert({"name":"test"+i, salary:(Math.random()*20000).toFixed
 
 ## 权限控制
 
-##### 1. 切换到admin创建管理员
+### 分片集群安全认证
 
-MongoDB 服务端开启安全检查之前，至少需要有一个管理员账号，admin 数据库中的用户都被视为管 理员
+1. #### 开启安全认证之前 进入路由创建管理员和普通用户
 
-```
-use admin;
-db.createUser( {
-  user:"root",
-  pwd:"123456",
-  roles:[{role:"root",db:"admin"}]
-} )
-```
+   - ##### 切换到admin创建管理员
 
-##### 2. 切换到lg_resume创建普通用户
+     MongoDB 服务端开启安全检查之前，至少需要有一个管理员账号，admin 数据库中的用户都被视为管 理员
 
-```
->show dbs
-admin 0.000GB
-config 0.000GB
-local 0.000GB
-lg_resume 0.000GB
-> use lg_resume
-switched to lg_resume
-> db.lg_resume_datas.insert({name:"testdb1"}) 
-> show tables
-lg_resume_datas
-> db.lg_resume_datas.find()
-...
+     ```
+     use admin;
+     db.createUser( {
+       user:"root",
+       pwd:"123456",
+       roles:[{role:"root",db:"admin"}]
+     } )
+     ```
 
-> db.createUser({
-... user:"lagou_gx",
-... pwd:"abc321",
-... roles:[{role:"readWrite",db:"lg_resume"}] 
-... })
-```
+   - ##### 切换到lg_resume创建普通用户
 
-接着从客户端关闭 MongoDB 服务端，之后服务端会以安全认证方式进行启动
+     ```
+     >show dbs
+     admin 0.000GB
+     config 0.000GB
+     local 0.000GB
+     lg_resume 0.000GB
+     > use lg_resume
+     switched to lg_resume
+     > db.lg_resume_datas.insert({name:"testdb1"}) 
+     > show tables
+     lg_resume_datas
+     > db.lg_resume_datas.find()
+     ...
+     
+     > db.createUser({
+     ... user:"lagou_gx",
+     ... pwd:"abc321",
+     ... roles:[{role:"readWrite",db:"lg_resume"}] 
+     ... })
+     ```
 
-```
-> use lg_resume
-switched to db lg_resume
-> db.shutdownServer() 
-server should be down...
-```
+     接着从客户端关闭 MongoDB 服务端，之后服务端会以安全认证方式进行启动
 
-**3. MongoDB** **安全认证方式启动
-** mongod --dbpath=数据库路径 --port=端口 --auth
+     ```
+     use lg_resume
+     switched to db lg_resume
+     db.shutdownServer() 
+     server should be down...
+     ```
 
-也可以在配置文件中 加入 auth=true
+   - ##### MongoDB 安全认证方式启动
+
+   ​		mongod --dbpath=数据库路径 --port=端口 --auth
+
+   ​		也可以在配置文件中 加入 auth=true
+
+   - **分别以普通用户登录验证权限**
+
+     普通用户现在仍然像以前一样进行登录，如下所示直接登录进入 lg_resume 数据库中，登录是成功的，只是登录后日志少了很多东西，而且执行 show dbs 命令，以及 show tables 等命令都是失败的，即使没有被安全认证的数据库，用户同样操作不了，这都是因为权限不足，一句话:用户只能在自己权限范围内的数据库中进行操作
+
+     ```
+     mongo localhost:57017/lg_resume
+     > show dbs
+     ```
+
+     如下所示，登录之后必须使用 db.auth("账号","密码") 方法进行安全认证，认证通过，才能进行权限范 围内的操作
+
+     ```
+     > db.auth("lagou_gx","abc321") 
+     1
+     > show dbs
+     lg_resume 0.000GB
+     > show tables
+     lg_resume_datas
+     ```
+
+     ##### 以管理员登录验证权限
+
+     客户端管理员登录如下所示 管理员 root 登录，安全认证通过后，拥有对所有数据库的所有权限。
+
+     ```
+     mongo localhost:57017
+     > use admin
+     switched to db admin
+     > db.auth("root","root") 
+     1
+     > show dbs 
+     ...
+     ```
+
+   2. #### **关闭所有的配置节点，分片节点和路由节点**
+
+      ```
+      安装psmisc
+      yum install psmisc
+      安装完之后可以使用killall 命令 快速关闭多个进程 
+      killall mongod
+      killall mongos
+      ```
+
+   3. **生成密钥文件并修改权限**
+
+      ```
+      openssl rand -base64 756 > data/mongodb/testKeyFile.file chmod 600 data/mongodb/keyfile/testKeyFile.file
+      ```
+
+   4. **配置节点集群和分片节点集群开启安全认证和指定密钥文件**
+
+      ```
+      auth=true 
+      keyFile=data/mongodb/testKeyFile.file
+      ```
+
+   5. **在路由配置文件中设置密钥文件**
+
+      ```
+      keyFile=data/mongodb/testKeyFile.file
+      ```
+
+   6. **启动所有的配置节点 分片节点 和 路由节点 使用路由进行权限验证**
+
+      可以编写一个shell 脚本批量启动
+
+      ```
+      vi startup.sh
+      ```
+
+      ```
+      ./bin/mongod -f config/config-17011.conf
+      ./bin/mongod -f config/config-17013.conf
+      ./bin/mongod -f config/config-17015.conf
+      ./bin/mongod -f shard/shard1/shard1-37011.conf
+      ./bin/mongod -f shard/shard1/shard1-37013.conf
+      ./bin/mongod -f shard/shard1/shard1-37015.conf
+      ./bin/mongod -f shard/shard1/shard1-37017.conf
+      ./bin/mongod -f shard/shard2/shard2-47011.conf
+      ./bin/mongod -f shard/shard2/shard2-47013.conf
+      ./bin/mongod -f shard/shard2/shard2-47015.conf
+      ./bin/mongod -f shard/shard2/shard2-47017.conf
+      ./bin/mongod -f shard/shard3/shard3-57011.conf
+      ./bin/mongod -f shard/shard3/shard3-57013.conf
+      ./bin/mongod -f shard/shard3/shard3-57015.conf
+      ./bin/mongod -f shard/shard3/shard3-57017.conf
+      ./bin/mongod -f shard/shard4/shard4-58011.conf
+      ./bin/mongod -f shard/shard4/shard4-58013.conf
+      ./bin/mongod -f shard/shard4/shard4-58015.conf
+      ./bin/mongod -f shard/shard4/shard4-58017.conf
+      ./bin/mongos -f route/route-27017.conf
+      ```
+
+      ```
+      chmod +x startup.sh
+      ./startup.sh
+      ```
 
 ## 编写Spring Boot项目进行测试
 
